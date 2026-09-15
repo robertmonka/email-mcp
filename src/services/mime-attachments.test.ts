@@ -5,7 +5,7 @@ import {
 } from './mime-attachments.js';
 
 describe('mime-attachments', () => {
-  const outlookInbox = {
+  const inlineCidInbox = {
     type: 'multipart/mixed',
     childNodes: [
       {
@@ -50,7 +50,7 @@ describe('mime-attachments', () => {
     ],
   };
 
-  it('lists Outlook inline images with full MIME type and no Content-Disposition', () => {
+  it('lists inline CID images with full MIME type and no Content-Disposition', () => {
     const attachments = extractAttachments(outlookInbox);
     expect(attachments.map((a) => a.filename)).toEqual(['image025.png', 'image026.png']);
     expect(attachments.every((a) => a.mimeType === 'image/png')).toBe(true);
