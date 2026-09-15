@@ -58,7 +58,7 @@ function uniquifyFilename(seen: Set<string>, name: string): string {
   return next;
 }
 
-/** Attachments, plus named/CID inline images (Outlook often omits Content-Disposition). */
+/** Attachments, plus named/CID inline images (often no Content-Disposition). */
 export function isDownloadablePart(bodyStructure: unknown): boolean {
   const bs = asPart(bodyStructure);
   if (!bs) return false;
