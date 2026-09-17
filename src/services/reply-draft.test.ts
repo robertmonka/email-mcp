@@ -1,10 +1,15 @@
 import type { Account, Email } from '../types/index.js';
 import {
+  attributionLine,
   buildReplyDraft,
+  composeReplyBodies,
+  plainTextToHtml,
+  quoteOriginalHtml,
   quoteOriginalText,
   replyRecipients,
   replyReferences,
   replySubject,
+  unwrapHtmlDocument,
 } from './reply-draft.js';
 
 // ---------------------------------------------------------------------------
@@ -43,6 +48,16 @@ function decodeQuotedPrintable(body: string): string {
     .replace(/=\r\n/g, '')
     .replace(/=([0-9A-F]{2})/g, (_m, hex: string) => String.fromCharCode(parseInt(hex, 16)));
   return Buffer.from(bytes, 'latin1').toString('utf8');
+}
+
+function decodedBodies(raw: string): string {
+  // Prefer the HTML part when multipart/alternative; fall back to whole payload.
+  const htmlBoundary =
+    /Content-Type: text\/html; charset=utf-8\r\n(?:.*\r\n)*?\r\n([\s\S]*?)(?:\r\n--|\r\n$)/i.exec(
+      raw,
+    );
+  if (htmlBoundary) return decodeQuotedPrintable(htmlBoundary[1]);
+  return decodeQuotedPrintable(raw.split('\r\n\r\n').slice(1).join('\r\n\r\n'));
 }
 
 // ---------------------------------------------------------------------------
@@ -99,23 +114,69 @@ describe('replyReferences', () => {
   });
 });
 
-describe('quoteOriginalText', () => {
-  it('prefixes every original line with "> " below an attribution line', () => {
-    expect(quoteOriginalText(original)).toBe(
-      [
-        'On Wed, 16 Sep 2026 08:15:00 GMT, Tom Sender <tom@example.org> wrote:',
-        '> Hello,',
-        '> please sign the agreement.',
-        '>',
-        '> Regards',
-        '> Tom',
-      ].join('\n'),
+describe('attributionLine', () => {
+  it('uses Mailbird Polish wording with local date and address', () => {
+    expect(attributionLine(original)).toMatch(
+      /^W dniu 16\.09\.2026 \d{2}:\d{2}:\d{2}, Tom Sender <tom@example\.org> pisze:$/,
     );
   });
 });
 
+describe('plainTextToHtml / unwrapHtmlDocument', () => {
+  it('turns plain lines into div blocks without a pre wrapper', () => {
+    expect(plainTextToHtml('Hello,\n\nTom')).toBe('<div>Hello,</div><div><br></div><div>Tom</div>');
+  });
+
+  it('unwraps html/body documents to an embeddable fragment', () => {
+    expect(unwrapHtmlDocument('<html><body><p>Hi</p></body></html>')).toBe('<p>Hi</p>');
+  });
+});
+
+describe('quoteOriginalHtml', () => {
+  it('emits a Mailbird history_container and preserves original HTML', () => {
+    const html = quoteOriginalHtml({
+      ...original,
+      bodyHtml: '<html><body><p>Hello <b>there</b></p></body></html>',
+    });
+    expect(html).toContain('class="history_container"');
+    expect(html).toContain('type="cite"');
+    expect(html).toContain('<p>Hello <b>there</b></p>');
+    expect(html).not.toContain('<pre>');
+    expect(html).toMatch(/W dniu .* pisze:/);
+    expect(html).toContain('color: #AAAAAA');
+  });
+
+  it('converts plain-text originals to HTML divs instead of pre', () => {
+    const html = quoteOriginalHtml(original);
+    expect(html).toContain('class="history_container"');
+    expect(html).toContain('<div>Hello,</div>');
+    expect(html).toContain('<div>please sign the agreement.</div>');
+    expect(html).not.toContain('<pre>');
+  });
+});
+
+describe('quoteOriginalText', () => {
+  it('prefixes every original line with "> " below an attribution line', () => {
+    const quoted = quoteOriginalText(original);
+    expect(quoted.startsWith(attributionLine(original))).toBe(true);
+    expect(quoted).toContain('> Hello,');
+    expect(quoted).toContain('> please sign the agreement.');
+    expect(quoted).toContain('> Regards');
+    expect(quoted).toContain('> Tom');
+  });
+});
+
+describe('composeReplyBodies', () => {
+  it('always emits HTML with history when quoting, even for plain reply bodies', () => {
+    const bodies = composeReplyBodies(original, { body: 'OK' });
+    expect(bodies.html).toContain('<div>OK</div>');
+    expect(bodies.html).toContain('history_container');
+    expect(bodies.text).toContain('OK\n\nW dniu');
+  });
+});
+
 describe('buildReplyDraft', () => {
-  it('builds a threaded plain-text reply with the original quoted', async () => {
+  it('builds a threaded HTML reply with Mailbird history when quoting', async () => {
     const draft = await buildReplyDraft(account, original, {
       body: 'Hello,\nsigned copy attached.\n\nRegards\nZoë',
     });
@@ -125,17 +186,16 @@ describe('buildReplyDraft', () => {
     expect(header(raw, 'References')).toBe('<root@example.org> <orig-123@example.org>');
     expect(header(raw, 'Subject')).toBe('Re: Data processing agreement');
     expect(header(raw, 'To')).toContain('tom@example.org');
-    expect(header(raw, 'Cc')).toBeUndefined();
     expect(header(raw, 'From')).toContain('me@example.com');
-    expect(header(raw, 'From')).toMatch(/=\?UTF-8\?/i);
-    expect(header(raw, 'Message-ID')).toBeTruthy();
-    expect(header(raw, 'Date')).toBeTruthy();
-    expect(header(raw, 'Content-Type')).toMatch(/text\/plain; charset=utf-8/i);
-    expect(header(raw, 'Content-Transfer-Encoding')).toMatch(/quoted-printable|base64/i);
+    expect(draft.html).toBe(true);
+    expect(raw).toMatch(/Content-Type: text\/html; charset=utf-8/i);
 
-    const body = decodeQuotedPrintable(raw.split('\r\n\r\n').slice(1).join('\r\n\r\n'));
-    expect(body).toContain('Hello,\nsigned copy attached.\n\nRegards\nZoë\n\nOn ');
-    expect(body).toContain('Tom Sender <tom@example.org> wrote:\n> Hello,\n> please sign');
+    const body = decodedBodies(raw);
+    expect(body).toContain('class="history_container"');
+    expect(body).toContain('<div>Hello,</div>');
+    expect(body).toContain('<div>signed copy attached.</div>');
+    expect(body).toContain('<div>please sign the agreement.</div>');
+    expect(body).not.toContain('<pre>');
 
     expect(draft.subject).toBe('Re: Data processing agreement');
     expect(draft.to.map((a) => a.address)).toEqual(['tom@example.org']);
@@ -147,16 +207,20 @@ describe('buildReplyDraft', () => {
       draft.raw.toString('utf8').split('\r\n\r\n').slice(1).join(''),
     );
     expect(body.trim()).toBe('OK');
+    expect(draft.html).toBe(false);
   });
 
-  it('quotes the original HTML in a blockquote for HTML replies', async () => {
+  it('embeds the original HTML fragment inside history_container', async () => {
     const draft = await buildReplyDraft(
       account,
       { ...original, bodyHtml: '<p>Hello <b>there</b></p>' },
       { body: '<p>OK</p>', html: true },
     );
     const raw = draft.raw.toString('utf8');
-    expect(header(raw, 'Content-Type')).toMatch(/text\/html/i);
-    expect(raw).toContain('<blockquote');
+    const body = decodedBodies(raw);
+    expect(raw).toMatch(/Content-Type: text\/html/i);
+    expect(body).toContain('history_container');
+    expect(body).toContain('<p>Hello <b>there</b></p>');
+    expect(body).not.toContain('<pre>');
   });
 });

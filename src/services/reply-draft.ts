@@ -1,6 +1,6 @@
 /**
- * Reply-draft builder — composes a threaded reply to an existing message as an
- * RFC 5322 MIME document suitable for APPEND to the Drafts folder.
+ * Reply composer — builds a threaded reply as an RFC 5322 MIME document,
+ * matching a mail client's Reply button (Mailbird history_container for HTML).
  *
  * Pure functions, no IMAP/SMTP dependency — fully unit-testable.
  */
@@ -21,6 +21,12 @@ export interface ReplyDraftMessage {
   to: EmailAddress[];
   cc: EmailAddress[];
   references: string[];
+  html: boolean;
+}
+
+export interface ComposedReplyBodies {
+  html?: string;
+  text?: string;
 }
 
 function formatAddress(addr: EmailAddress | undefined): string {
@@ -94,18 +100,54 @@ export function replyReferences(original: Pick<Email, 'references' | 'messageId'
   return [...(original.references ?? []), original.messageId].filter(Boolean);
 }
 
-function attributionLine(original: Pick<Email, 'from' | 'date'>): string {
+/** Mailbird-style attribution: "W dniu DD.MM.YYYY HH:MM:SS, Name <email> pisze:" */
+export function attributionLine(original: Pick<Email, 'from' | 'date'>): string {
   const date = new Date(original.date);
-  const when = Number.isNaN(date.getTime()) ? original.date : date.toUTCString();
+  let when = original.date;
+  if (!Number.isNaN(date.getTime())) {
+    const pad = (n: number): string => String(n).padStart(2, '0');
+    when = `${pad(date.getDate())}.${pad(date.getMonth() + 1)}.${date.getFullYear()} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+  }
   const who = original.from.name
     ? `${original.from.name} <${original.from.address}>`
     : original.from.address;
-  return `On ${when}, ${who} wrote:`;
+  return `W dniu ${when}, ${who} pisze:`;
+}
+
+/** Convert plain text into Mailbird-like HTML line blocks (no &lt;pre&gt;). */
+export function plainTextToHtml(text: string): string {
+  const normalized = text.replace(/\r\n/g, '\n').replace(/\s+$/, '');
+  if (normalized.length === 0) return '<div><br></div>';
+  return normalized
+    .split('\n')
+    .map((line) => (line.length > 0 ? `<div>${escapeHtml(line)}</div>` : '<div><br></div>'))
+    .join('');
+}
+
+/** Strip outer html/head/body wrappers so the fragment embeds cleanly in history. */
+export function unwrapHtmlDocument(html: string): string {
+  const bodyMatch = /<body[^>]*>([\s\S]*)<\/body>/i.exec(html);
+  if (bodyMatch) return bodyMatch[1].trim();
+  return html.replace(/<\/?(?:html|head)(?:\s[^>]*)?>/gi, '').trim();
 }
 
 /** Plain-text quote of the original message: attribution line + "> " prefixed lines. */
-export function quoteOriginalText(original: Pick<Email, 'from' | 'date' | 'bodyText'>): string {
-  const text = (original.bodyText ?? '').replace(/\r\n/g, '\n').replace(/\s+$/, '');
+export function quoteOriginalText(
+  original: Pick<Email, 'from' | 'date' | 'bodyText' | 'bodyHtml'>,
+): string {
+  const source =
+    original.bodyText ??
+    (original.bodyHtml
+      ? original.bodyHtml
+          .replace(/<br\s*\/?>/gi, '\n')
+          .replace(/<\/(p|div|tr|li|h[1-6])>/gi, '\n')
+          .replace(/<[^>]+>/g, '')
+          .replace(/&nbsp;/gi, ' ')
+          .replace(/&lt;/gi, '<')
+          .replace(/&gt;/gi, '>')
+          .replace(/&amp;/gi, '&')
+      : '');
+  const text = source.replace(/\r\n/g, '\n').replace(/\s+$/, '');
   const lines = text.length > 0 ? text.split('\n') : [];
   return [
     attributionLine(original),
@@ -113,14 +155,46 @@ export function quoteOriginalText(original: Pick<Email, 'from' | 'date' | 'bodyT
   ].join('\n');
 }
 
-/** HTML quote of the original message: attribution line + <blockquote>. */
+/**
+ * Mailbird-compatible history block: class=history_container so the client
+ * collapses it under "…", with the original HTML preserved (not flattened to &lt;pre&gt;).
+ */
 export function quoteOriginalHtml(
   original: Pick<Email, 'from' | 'date' | 'bodyText' | 'bodyHtml'>,
 ): string {
-  const inner =
-    original.bodyHtml ??
-    `<pre>${escapeHtml((original.bodyText ?? '').replace(/\r\n/g, '\n'))}</pre>`;
-  return `<div>${escapeHtml(attributionLine(original))}</div>\n<blockquote type="cite" style="margin:0 0 0 .8ex;border-left:1px solid #ccc;padding-left:1ex">${inner}</blockquote>`;
+  const inner = original.bodyHtml
+    ? unwrapHtmlDocument(original.bodyHtml)
+    : plainTextToHtml(original.bodyText ?? '');
+  const attr = escapeHtml(attributionLine(original));
+  return [
+    '<blockquote class="history_container" type="cite" style="border-left-style:solid;border-width:1px; margin-top:20px; margin-left:0px;padding-left:10px;">',
+    `<p style="color: #AAAAAA; margin-top: 10px;">${attr}</p>`,
+    `<div style="font-family:Arial,Helvetica,sans-serif">${inner}</div>`,
+    '</blockquote>',
+  ].join('');
+}
+
+/**
+ * Compose reply body parts. When quoting, always emit HTML with a Mailbird
+ * history_container so mail clients can collapse the thread history; also emit
+ * a plain-text alternative. Without quoting, honour the html flag as given.
+ */
+export function composeReplyBodies(
+  original: Email,
+  options: ReplyDraftOptions,
+): ComposedReplyBodies {
+  const quote = options.quoteOriginal !== false;
+
+  if (!quote) {
+    return options.html ? { html: options.body } : { text: options.body };
+  }
+
+  const replyHtml = options.html ? options.body : plainTextToHtml(options.body);
+  const history = quoteOriginalHtml(original);
+  return {
+    html: `${replyHtml}${history}`,
+    text: `${options.html ? options.body.replace(/<[^>]+>/g, '') : options.body}\n\n${quoteOriginalText(original)}`,
+  };
 }
 
 /**
@@ -136,11 +210,8 @@ export async function buildReplyDraft(
   const { to, cc } = replyRecipients(original, account.email, options.replyAll === true);
   const subject = replySubject(original.subject);
   const references = replyReferences(original);
-  const quote = options.quoteOriginal !== false;
-
-  const content = options.html
-    ? { html: quote ? `${options.body}\n<br><br>\n${quoteOriginalHtml(original)}` : options.body }
-    : { text: quote ? `${options.body}\n\n${quoteOriginalText(original)}` : options.body };
+  const bodies = composeReplyBodies(original, options);
+  const useHtml = bodies.html !== undefined;
 
   const mail = new MailComposer({
     from: formatAddress({ name: account.fullName ?? '', address: account.email }),
@@ -149,9 +220,11 @@ export async function buildReplyDraft(
     subject,
     inReplyTo: original.messageId || undefined,
     references: references.length > 0 ? references.join(' ') : undefined,
-    ...content,
+    ...(useHtml
+      ? { html: bodies.html, ...(bodies.text ? { text: bodies.text } : {}) }
+      : { text: bodies.text }),
   });
 
   const raw = await mail.compile().build();
-  return { raw, subject, to, cc, references };
+  return { raw, subject, to, cc, references, html: useHtml };
 }

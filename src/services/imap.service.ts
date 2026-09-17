@@ -43,6 +43,53 @@ function parseAddresses(addrs: { name?: string; address?: string }[] | undefined
   return addrs.map(parseAddress);
 }
 
+function partMimeType(bs: Record<string, unknown>): string {
+  const type = String(bs.type ?? '').toLowerCase();
+  if (type.includes('/')) return type;
+  return `${bs.type ?? 'application'}/${bs.subtype ?? 'octet-stream'}`.toLowerCase();
+}
+
+/** Find the MIME part path for text/plain or text/html in an ImapFlow bodyStructure. */
+function findTextPartPath(
+  bodyStructure: unknown,
+  want: 'text/plain' | 'text/html',
+  partPath = '',
+): string | undefined {
+  if (!bodyStructure || typeof bodyStructure !== 'object') return undefined;
+  const bs = bodyStructure as Record<string, unknown>;
+  const currentPart = typeof bs.part === 'string' ? bs.part : partPath;
+  const mime = partMimeType(bs);
+  if (mime === want) return currentPart || '1';
+  if (Array.isArray(bs.childNodes)) {
+    // eslint-disable-next-line no-plusplus
+    for (let i = 0; i < bs.childNodes.length; i++) {
+      const childPart = currentPart ? `${currentPart}.${i + 1}` : String(i + 1);
+      const found = findTextPartPath(bs.childNodes[i], want, childPart);
+      if (found) return found;
+    }
+  }
+  return undefined;
+}
+
+async function downloadUidPart(
+  client: ImapFlow,
+  uid: number,
+  partPath: string,
+): Promise<string | undefined> {
+  try {
+    const part = await client.download(String(uid), partPath, { uid: true });
+    if (!part?.content) return undefined;
+    const chunks: Buffer[] = [];
+    // eslint-disable-next-line no-restricted-syntax
+    for await (const chunk of part.content) {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    }
+    return Buffer.concat(chunks).toString('utf-8');
+  } catch {
+    return undefined;
+  }
+}
+
 function hasAttachments(bodyStructure: unknown): boolean {
   if (!bodyStructure || typeof bodyStructure !== 'object') return false;
   const bs = bodyStructure as Record<string, unknown>;
@@ -183,19 +230,21 @@ async function messageToEmail(
     }
   }
 
-  // Try to get text/html parts via download if body parsing was simple
-  try {
-    const textPart = await client.download(String(uid), '1', { uid: true });
-    if (textPart?.content) {
-      const chunks: Buffer[] = [];
-      // eslint-disable-next-line no-restricted-syntax
-      for await (const chunk of textPart.content) {
-        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-      }
-      bodyText = Buffer.concat(chunks).toString('utf-8');
-    }
-  } catch {
-    // Part may not exist
+  // Prefer dedicated MIME parts for text/plain and text/html (multipart/alternative).
+  const plainPath = findTextPartPath(msg.bodyStructure, 'text/plain');
+  const htmlPath = findTextPartPath(msg.bodyStructure, 'text/html');
+  if (plainPath) {
+    const plain = await downloadUidPart(client, uid, plainPath);
+    if (plain !== undefined) bodyText = plain;
+  }
+  if (htmlPath) {
+    const html = await downloadUidPart(client, uid, htmlPath);
+    if (html !== undefined) bodyHtml = html;
+  }
+  // Legacy fallback: part "1" as plain when structure had no typed parts.
+  if (bodyText === undefined && bodyHtml === undefined) {
+    const fallback = await downloadUidPart(client, uid, '1');
+    if (fallback !== undefined) bodyText = fallback;
   }
 
   return {

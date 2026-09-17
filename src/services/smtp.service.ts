@@ -8,6 +8,12 @@ import type { IConnectionManager } from '../connections/types.js';
 import type RateLimiter from '../safety/rate-limiter.js';
 import type { SendResult } from '../types/index.js';
 import type ImapService from './imap.service.js';
+import {
+  composeReplyBodies,
+  replyRecipients,
+  replyReferences,
+  replySubject,
+} from './reply-draft.js';
 
 export default class SmtpService {
   constructor(
@@ -63,6 +69,7 @@ export default class SmtpService {
       body: string;
       replyAll?: boolean;
       html?: boolean;
+      quoteOriginal?: boolean;
     },
   ): Promise<SendResult> {
     this.checkRateLimit(accountName);
@@ -70,42 +77,27 @@ export default class SmtpService {
     const account = this.connections.getAccount(accountName);
     const original = await this.imapService.getEmail(accountName, options.emailId, options.mailbox);
 
-    // Build recipient list
-    const to = [original.from.address];
-    const cc: string[] = [];
-
-    if (options.replyAll) {
-      // Add all original To recipients except ourselves
-      original.to
-        .filter((addr) => addr.address !== account.email)
-        .forEach((addr) => {
-          to.push(addr.address);
-        });
-      // Add CC recipients except ourselves
-      (original.cc ?? [])
-        .filter((addr) => addr.address !== account.email)
-        .forEach((addr) => {
-          cc.push(addr.address);
-        });
-    }
-
-    // Build threading headers
-    const references = [...(original.references ?? []), original.messageId].filter(Boolean);
-
-    const subject = original.subject.startsWith('Re:')
-      ? original.subject
-      : `Re: ${original.subject}`;
+    const { to, cc } = replyRecipients(original, account.email, options.replyAll === true);
+    const references = replyReferences(original);
+    const subject = replySubject(original.subject);
+    const bodies = composeReplyBodies(original, {
+      body: options.body,
+      html: options.html,
+      quoteOriginal: options.quoteOriginal,
+    });
 
     const transport = await this.connections.getSmtpTransport(accountName);
 
     const result = await transport.sendMail({
       from: account.fullName ? `"${account.fullName}" <${account.email}>` : account.email,
-      to: to.join(', '),
-      cc: cc.length > 0 ? cc.join(', ') : undefined,
+      to: to.map((a) => a.address).join(', '),
+      cc: cc.length > 0 ? cc.map((a) => a.address).join(', ') : undefined,
       subject,
       inReplyTo: original.messageId,
       references: references.join(' '),
-      ...(options.html ? { html: options.body } : { text: options.body }),
+      ...(bodies.html
+        ? { html: bodies.html, ...(bodies.text ? { text: bodies.text } : {}) }
+        : { text: bodies.text }),
     });
 
     return {

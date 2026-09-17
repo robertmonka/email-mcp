@@ -77,7 +77,7 @@ export default function registerDraftTools(
   // ---------------------------------------------------------------------------
   server.tool(
     'reply_draft',
-    'Reply to an existing email and save the reply to the Drafts folder WITHOUT sending it. Works like the Reply button of a mail client: sets In-Reply-To and References threading headers, "Re:" subject, reply recipients (Reply-To or From; all recipients with replyAll) and quotes the original message below the body. Nothing is sent; the user reviews and sends the draft from their mail client or with send_draft. Use get_email first to read the original.',
+    'Reply to an existing email and save the reply to the Drafts folder WITHOUT sending it. Works like the Reply button of a mail client (Mailbird): sets In-Reply-To and References, "Re:" subject, reply recipients, and quotes the original under a history_container blockquote that preserves the original HTML so the client can collapse it. Nothing is sent; the user reviews and sends the draft from their mail client or with send_draft. Use get_email first to read the original.',
     {
       account: z.string().describe('Account name from list_accounts'),
       emailId: z.string().describe('Email ID to reply to (from list_emails or get_email)'),

@@ -72,14 +72,18 @@ export default function registerSendTools(server: McpServer, smtpService: SmtpSe
   // ---------------------------------------------------------------------------
   server.tool(
     'reply_email',
-    'Reply to an email with proper threading (In-Reply-To & References headers) and send it immediately via SMTP. To prepare a reply for the user to review first, use reply_draft instead. Use get_email first to read the original.',
+    'Reply to an email with proper threading (In-Reply-To & References headers) and send it immediately via SMTP. Quotes the original under a Mailbird-compatible history_container (HTML preserved). To prepare a reply for the user to review first, use reply_draft instead. Use get_email first to read the original.',
     {
       account: z.string().describe('Account name from list_accounts'),
       emailId: z.string().describe('Email ID to reply to (from list_emails or get_email)'),
       mailbox: z.string().default('INBOX').describe('Mailbox where the original email is'),
-      body: z.string().describe('Reply body content'),
+      body: z.string().describe('Reply body content (placed above the quoted original)'),
       replyAll: z.boolean().default(false).describe('Reply to all recipients'),
-      html: z.boolean().default(false).describe('Send as HTML'),
+      html: z.boolean().default(false).describe('Body is HTML (default: plain text)'),
+      quoteOriginal: z
+        .boolean()
+        .default(true)
+        .describe('Quote the original message below the body (Mailbird history_container)'),
     },
     { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
     async (params) => {
