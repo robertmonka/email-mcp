@@ -172,7 +172,7 @@ describe('ImapService', () => {
   // -----------------------------------------------------------------------
 
   describe('saveDraft', () => {
-    it('appends a plain RFC822 message when there are no attachments', async () => {
+    it('builds a MIME message via MailComposer when there are no attachments', async () => {
       const result = await service.saveDraft('test', {
         to: ['dest@example.com'],
         subject: 'Hello',
@@ -183,10 +183,12 @@ describe('ImapService', () => {
       const [mailbox, raw, flags] = client.append.mock.calls[0];
       expect(mailbox).toBe('Drafts');
       expect(flags).toEqual(['\\Draft', '\\Seen']);
+      expect(Buffer.isBuffer(raw)).toBe(true);
       const text = (raw as Buffer).toString('utf-8');
-      expect(text).toContain('Subject: Hello');
-      expect(text).toContain('To: dest@example.com');
+      expect(text).toMatch(/Subject:.*Hello/);
+      expect(text).toContain('dest@example.com');
       expect(text).toContain('World');
+      expect(text).toMatch(/MIME-Version:/i);
     });
 
     it('builds a multipart MIME message with the attachment when attachments are provided', async () => {

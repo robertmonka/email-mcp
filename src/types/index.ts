@@ -388,6 +388,7 @@ export interface ScheduledEmail {
   draftMailbox?: string;
   inReplyTo?: string;
   references?: string[];
+  attachments?: AttachmentInput[];
   sentAt?: string;
   sentMessageId?: string;
 }

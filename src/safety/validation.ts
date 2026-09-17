@@ -1,3 +1,4 @@
+import fs from 'node:fs/promises';
 import type { AttachmentInput } from '../types/index.js';
 
 /** Input validation and sanitization utilities. */
@@ -143,8 +144,11 @@ function base64DecodedSize(base64: string): number {
  * Validate outgoing email attachments (from send_email, reply_email, forward_email,
  * save_draft, reply_draft). Enforces count and size limits and rejects unsafe filenames.
  * Each attachment must provide exactly one of `content` (base64) or `path`.
+ * Path-based sizes are included in the combined total via filesystem stats.
  */
-export function validateAttachments(attachments: AttachmentInput[] | undefined): void {
+export async function validateAttachments(
+  attachments: AttachmentInput[] | undefined,
+): Promise<void> {
   if (!attachments || attachments.length === 0) return;
 
   if (attachments.length > MAX_ATTACHMENTS) {
@@ -153,40 +157,53 @@ export function validateAttachments(attachments: AttachmentInput[] | undefined):
     );
   }
 
-  let totalSize = 0;
+  const sizes = await Promise.all(
+    attachments.map(async (att) => {
+      const filename = att.filename?.trim();
+      if (!filename) {
+        throw new Error('Each attachment must have a non-empty filename');
+      }
+      /* eslint-disable no-control-regex */
+      // biome-ignore lint/suspicious/noControlCharactersInRegex: intentional — reject control chars and path separators in filenames
+      if (/[\x00-\x1F/\\]/.test(filename)) {
+        throw new Error(
+          `Attachment filename "${filename}" must not contain path separators or control characters`,
+        );
+      }
+      /* eslint-enable no-control-regex */
 
-  attachments.forEach((att) => {
-    const filename = att.filename?.trim();
-    if (!filename) {
-      throw new Error('Each attachment must have a non-empty filename');
-    }
-    /* eslint-disable no-control-regex */
-    // biome-ignore lint/suspicious/noControlCharactersInRegex: intentional — reject control chars and path separators in filenames
-    if (/[\x00-\x1F/\\]/.test(filename)) {
-      throw new Error(
-        `Attachment filename "${filename}" must not contain path separators or control characters`,
-      );
-    }
-    /* eslint-enable no-control-regex */
+      const hasContent = typeof att.content === 'string' && att.content.length > 0;
+      const hasPath = typeof att.path === 'string' && att.path.length > 0;
+      if (hasContent === hasPath) {
+        throw new Error(
+          `Attachment "${filename}" must provide exactly one of "content" (base64) or "path"`,
+        );
+      }
 
-    const hasContent = typeof att.content === 'string' && att.content.length > 0;
-    const hasPath = typeof att.path === 'string' && att.path.length > 0;
-    if (hasContent === hasPath) {
-      throw new Error(
-        `Attachment "${filename}" must provide exactly one of "content" (base64) or "path"`,
-      );
-    }
+      let size = 0;
+      if (hasContent) {
+        size = base64DecodedSize(att.content as string);
+      } else {
+        const filePath = att.path as string;
+        const stat = await fs.stat(filePath).catch(() => {
+          throw new Error(`Attachment "${filename}": file not found at path "${filePath}"`);
+        });
+        if (!stat.isFile()) {
+          throw new Error(`Attachment "${filename}": path "${filePath}" is not a file`);
+        }
+        size = stat.size;
+      }
 
-    if (hasContent) {
-      const size = base64DecodedSize(att.content as string);
       if (size > MAX_ATTACHMENT_SIZE) {
         throw new Error(
           `Attachment "${filename}" (${Math.round(size / 1024 / 1024)}MB) exceeds the ${MAX_ATTACHMENT_SIZE / 1024 / 1024}MB per-file limit`,
         );
       }
-      totalSize += size;
-    }
-  });
+      return size;
+    }),
+  );
+
+  const totalSize = sizes.reduce((sum, size) => sum + size, 0);
 
   if (totalSize > MAX_TOTAL_ATTACHMENTS_SIZE) {
     throw new Error(
