@@ -1,5 +1,5 @@
 /**
- * MCP tools: save_draft, send_draft
+ * MCP tools: save_draft, reply_draft, send_draft
  */
 
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -65,6 +65,67 @@ export default function registerDraftTools(
             {
               type: 'text' as const,
               text: `Failed to save draft: ${errMsg}`,
+            },
+          ],
+        };
+      }
+    },
+  );
+
+  // ---------------------------------------------------------------------------
+  // reply_draft
+  // ---------------------------------------------------------------------------
+  server.tool(
+    'reply_draft',
+    'Reply to an existing email and save the reply to the Drafts folder WITHOUT sending it. Works like the Reply button of a mail client: sets In-Reply-To and References threading headers, "Re:" subject, reply recipients (Reply-To or From; all recipients with replyAll) and quotes the original message below the body. Nothing is sent; the user reviews and sends the draft from their mail client or with send_draft. Use get_email first to read the original.',
+    {
+      account: z.string().describe('Account name from list_accounts'),
+      emailId: z.string().describe('Email ID to reply to (from list_emails or get_email)'),
+      mailbox: z.string().default('INBOX').describe('Mailbox where the original email is'),
+      body: z.string().describe('Reply body content (placed above the quoted original)'),
+      replyAll: z.boolean().default(false).describe('Reply to all recipients'),
+      html: z.boolean().default(false).describe('Body is HTML (default: plain text)'),
+      quoteOriginal: z
+        .boolean()
+        .default(true)
+        .describe('Quote the original message below the body'),
+    },
+    { readOnlyHint: false, destructiveHint: false },
+    async (params) => {
+      try {
+        const result = await imapService.saveReplyDraft(params.account, params);
+
+        await audit.log(
+          'reply_draft',
+          params.account,
+          { emailId: params.emailId, mailbox: params.mailbox, subject: result.subject },
+          'ok',
+        );
+
+        const ccLine = result.cc.length > 0 ? `\nCc: ${result.cc.join(', ')}` : '';
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: `📝 Reply draft saved (ID: ${result.id}, folder: ${result.mailbox}). Not sent.\nTo: ${result.to.join(', ')}${ccLine}\nSubject: ${result.subject}\nIn-Reply-To: ${result.inReplyTo}`,
+            },
+          ],
+        };
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        await audit.log(
+          'reply_draft',
+          params.account,
+          { emailId: params.emailId, mailbox: params.mailbox },
+          'error',
+          errMsg,
+        );
+        return {
+          isError: true,
+          content: [
+            {
+              type: 'text' as const,
+              text: `Failed to save reply draft: ${errMsg}`,
             },
           ],
         };

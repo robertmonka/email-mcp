@@ -165,4 +165,61 @@ describe('ImapService', () => {
       expect(client.messageFlagsAdd).toHaveBeenCalledWith('10', ['\\Flagged'], { uid: true });
     });
   });
+
+  // -----------------------------------------------------------------------
+  // saveReplyDraft
+  // -----------------------------------------------------------------------
+
+  describe('saveReplyDraft', () => {
+    it('appends a threaded reply to the Drafts folder without sending', async () => {
+      client.list.mockResolvedValue([
+        { path: 'INBOX' },
+        { path: 'Drafts', specialUse: '\\Drafts' },
+      ]);
+      const append = vi.fn().mockResolvedValue({ uid: 501 });
+      Object.assign(client, { append });
+      const getEmail = vi.spyOn(service, 'getEmail').mockResolvedValue({
+        id: '123',
+        subject: 'Agreement',
+        from: { name: 'Tom', address: 'tom@example.org' },
+        to: [{ address: 'test@example.com' }],
+        date: '2026-09-16T08:15:00.000Z',
+        seen: true,
+        flagged: false,
+        answered: false,
+        hasAttachments: false,
+        labels: [],
+        messageId: '<orig@example.org>',
+        bodyText: 'Please sign.',
+        attachments: [],
+        headers: {},
+      });
+
+      const result = await service.saveReplyDraft('test', {
+        emailId: '123',
+        mailbox: 'INBOX',
+        body: 'Signed copy attached.',
+      });
+
+      expect(getEmail).toHaveBeenCalledWith('test', '123', 'INBOX');
+      expect(append).toHaveBeenCalledTimes(1);
+      const [path, raw, flags] = append.mock.calls[0] as [string, Buffer, string[]];
+      expect(path).toBe('Drafts');
+      expect(flags).toEqual(['\\Draft', '\\Seen']);
+      const message = raw.toString('utf8');
+      expect(message).toMatch(/^In-Reply-To: <orig@example\.org>/m);
+      expect(message).toMatch(/^References: <orig@example\.org>/m);
+      expect(message).toMatch(/^Subject: Re: Agreement/m);
+      expect(message).toMatch(/^To: "?Tom"? <tom@example\.org>/m);
+      expect(connections.getSmtpTransport).not.toHaveBeenCalled();
+      expect(result).toEqual({
+        id: 501,
+        mailbox: 'Drafts',
+        subject: 'Re: Agreement',
+        to: ['tom@example.org'],
+        cc: [],
+        inReplyTo: '<orig@example.org>',
+      });
+    });
+  });
 });

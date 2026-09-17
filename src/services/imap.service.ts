@@ -24,6 +24,8 @@ import type {
 } from '../types/index.js';
 import type { LabelStrategy } from './label-strategy.js';
 import { detectLabelStrategy } from './label-strategy.js';
+import type { ReplyDraftOptions } from './reply-draft.js';
+import { buildReplyDraft } from './reply-draft.js';
 
 // ---------------------------------------------------------------------------
 // Helpers (must be defined before ImapService)
@@ -200,6 +202,9 @@ async function messageToEmail(
     ...meta,
     cc: parseAddresses(envelope.cc as Record<string, string>[]),
     bcc: parseAddresses(envelope.bcc as Record<string, string>[]),
+    replyTo: envelope.replyTo
+      ? parseAddresses(envelope.replyTo as Record<string, string>[])
+      : undefined,
     bodyText,
     bodyHtml,
     messageId: (envelope.messageId as string) ?? '',
@@ -1050,6 +1055,43 @@ export default class ImapService {
     return {
       id: (appendResult as unknown as { uid?: number }).uid ?? 0,
       mailbox: draftsPath,
+    };
+  }
+
+  /**
+   * Reply to an existing message and store the reply in Drafts without sending.
+   * Threading headers, "Re:" subject, recipients and the quoted original are
+   * derived from the original message like a mail client's Reply button.
+   */
+  async saveReplyDraft(
+    accountName: string,
+    options: ReplyDraftOptions & { emailId: string; mailbox?: string },
+  ): Promise<{
+    id: number;
+    mailbox: string;
+    subject: string;
+    to: string[];
+    cc: string[];
+    inReplyTo: string;
+  }> {
+    const original = await this.getEmail(accountName, options.emailId, options.mailbox);
+    const account = this.connections.getAccount(accountName);
+    const draft = await buildReplyDraft(account, original, options);
+
+    const client = await this.connections.getImapClient(accountName);
+    const mailboxes = await client.list();
+    const drafts = mailboxes.find((mb) => mb.specialUse === '\\Drafts');
+    const draftsPath = drafts?.path ?? 'Drafts';
+
+    const appendResult = await client.append(draftsPath, draft.raw, ['\\Draft', '\\Seen']);
+
+    return {
+      id: (appendResult as unknown as { uid?: number }).uid ?? 0,
+      mailbox: draftsPath,
+      subject: draft.subject,
+      to: draft.to.map((a) => a.address),
+      cc: draft.cc.map((a) => a.address),
+      inReplyTo: original.messageId,
     };
   }
 
