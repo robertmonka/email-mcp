@@ -7,12 +7,14 @@
 
 import MailComposer from 'nodemailer/lib/mail-composer/index.js';
 import type { Account, Email, EmailAddress } from '../types/index.js';
+import type { MailAttachment } from '../utils/mail-attachments.js';
 
 export interface ReplyDraftOptions {
   body: string;
   replyAll?: boolean;
   html?: boolean;
   quoteOriginal?: boolean;
+  attachments?: MailAttachment[];
 }
 
 export interface ReplyDraftMessage {
@@ -220,6 +222,7 @@ export async function buildReplyDraft(
     subject,
     inReplyTo: original.messageId || undefined,
     references: references.length > 0 ? references.join(' ') : undefined,
+    attachments: options.attachments,
     ...(useHtml
       ? { html: bodies.html, ...(bodies.text ? { text: bodies.text } : {}) }
       : { text: bodies.text }),

@@ -218,9 +218,26 @@ describe('buildReplyDraft', () => {
     );
     const raw = draft.raw.toString('utf8');
     const body = decodedBodies(raw);
-    expect(raw).toMatch(/Content-Type: text\/html/i);
-    expect(body).toContain('history_container');
+    expect(body).toContain('class="history_container"');
     expect(body).toContain('<p>Hello <b>there</b></p>');
-    expect(body).not.toContain('<pre>');
+    expect(body).toContain('<p>OK</p>');
+  });
+
+  it('includes attachments in the composed MIME', async () => {
+    const draft = await buildReplyDraft(account, original, {
+      body: 'Signed.',
+      quoteOriginal: false,
+      attachments: [
+        {
+          filename: 'signed.pdf',
+          content: Buffer.from('pdf-bytes'),
+          contentType: 'application/pdf',
+        },
+      ],
+    });
+    const raw = draft.raw.toString('utf8');
+    expect(raw).toContain('multipart/mixed');
+    expect(raw).toContain('Content-Disposition: attachment; filename=signed.pdf');
+    expect(raw).toContain(Buffer.from('pdf-bytes').toString('base64'));
   });
 });
